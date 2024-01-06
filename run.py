@@ -1,116 +1,104 @@
+#!/usr/bin/env python3
+
 import os
 import json
-from datetime import datetime, timedelta
+from datetime import datetime
 
 class InventoryDatabase:
-    def __init__(self, database_dir="database"):
-        self.database_dir = database_dir
-        os.makedirs(self.database_dir, exist_ok=True)
+    def __init__(self, database_directory="database"):
+        self.database_directory = database_directory
+        os.makedirs(self.database_directory, exist_ok=True)
 
-    def get_today_filename(self):
-        today = datetime.now().strftime("%Y-%m-%d")
-        return os.path.join(self.database_dir, f"inventory_{today}.json")
+        # Create file for today if not available
+        self.create_file_for_today()
 
-    def get_last_available_filename(self):
-        filenames = sorted(os.listdir(self.database_dir), reverse=True)
-        for filename in filenames:
-            if filename.startswith("inventory_"):
-                return os.path.join(self.database_dir, filename)
+    def get_todays_filename(self):
+        return f"database_{datetime.now().strftime('%Y-%m-%d')}.json"
 
-    def load_data(self, filename):
-        if os.path.exists(filename):
-            with open(filename, "r") as file:
-                return json.load(file)
-        else:
-            return []
+    def create_file_for_today(self):
+        today_filename = self.get_todays_filename()
+        file_path = os.path.join(self.database_directory, today_filename)
 
-    def save_data(self, filename, data):
-        with open(filename, "w") as file:
-            json.dump(data, file, indent=2)
+        # Check if the file already exists
+        if not os.path.isfile(file_path):
+            with open(file_path, "w") as new_file:
+                json.dump({}, new_file, indent=2)
+                print(f"File created: {file_path}")
 
-    def assign_item_number(self):
-        # Check through all previous files to find a unique item number
-        for filename in os.listdir(self.database_dir):
-            if filename.endswith(".json"):
-                data = self.load_data(os.path.join(self.database_dir, filename))
-                item_numbers = set()
-                for entry in data:
-                    item_numbers.add(entry["item"].get("item_number"))
-                if None not in item_numbers:
-                    return max(item_numbers) + 1
-                else:
-                    return 1
+    def list_all_filenames_except_today(self):
+        today_filename = self.get_todays_filename()
+        all_filenames = os.listdir(self.database_directory)
 
-    def find_or_assign_item_number(self, name):
-        # Search through all previous files to find the item number associated with the given name
-        for filename in os.listdir(self.database_dir):
-            if filename.endswith(".json"):
-                data = self.load_data(os.path.join(self.database_dir, filename))
-                for entry in data:
-                    item = entry.get("item", {})
-                    if item.get("name") == name:
-                        return item.get("item_number")
+        # Exclude today's filename from the list
+        valid_filenames_except_today = [filename for filename in all_filenames
+                                         if "database_" in filename and "~" not in filename and filename != today_filename]
 
-        # If no item_number found, assign a new one
-        return self.assign_item_number()
+        # Check if the files are actually JSON files
+        json_filenames_except_today = [filename for filename in valid_filenames_except_today
+                                        if filename.endswith(".json")]
 
-    def add_item(self, name, quantity, price, batch_number=None, item_number=None, expire_date=None, extra_parameters=None):
-        if extra_parameters is None:
-            extra_parameters = {}
+        return json_filenames_except_today
 
-        if item_number is None:
-            item_number = self.find_or_assign_item_number(name)
+    def save_inventory_data(self, inventory_data):
+        filename = self.get_todays_filename()
+        file_path = os.path.join(self.database_directory, filename)
 
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        entry = {
-            "timestamp": timestamp,
-            "item": {
-                "name": name,
-                "quantity": quantity,
-                "price": price,
-                "batch_number": batch_number,
-                "item_number": item_number,
-                "expire_date": expire_date,
-                "extra_parameters": extra_parameters
-            }
-        }
+        # Load existing data from the file
+        with open(file_path, "r") as json_file:
+            existing_data = json.load(json_file)
 
-        data = self.load_data(self.get_today_filename())
-        data.append(entry)
-        self.save_data(self.get_today_filename(), data)
+        # Update the existing data with the new inventory_data
+        existing_data.update(inventory_data)
 
-    def remove_item(self, name, quantity, price, batch_number=None, item_number=None, expire_date=None, extra_parameters=None):
-        # Call add_item with negative quantity to indicate removal
-        self.add_item(name, -quantity, price, batch_number, item_number, expire_date, extra_parameters)
+        # Save the updated data back to the file
+        with open(file_path, "w") as json_file:
+            json.dump(existing_data, json_file, indent=2)
+
+        print(f"Data saved to {file_path}")
 
     def carry_forward(self):
-        today_filename = self.get_today_filename()
+        today_date = datetime.now().strftime('%Y-%m-%d')
+        filenames_except_today = self.list_all_filenames_except_today()
 
-        if not os.path.exists(today_filename):
-            last_available_filename = self.get_last_available_filename()
-            if last_available_filename:
-                last_data = self.load_data(last_available_filename)
-                today_data = self.load_data(today_filename)
+        non_zero_sum_entries = []
+        id_sums = {}
 
-                # Dictionary to keep track of net quantities for each item
-                net_quantities = {}
+        for filename in filenames_except_today:
+            file_path = os.path.join(self.database_directory, filename)
 
-                # Update net quantities based on the last available day
-                for entry in last_data:
-                    item_name = entry["item"]["name"]
-                    quantity = entry["item"]["quantity"]
-                    net_quantities[item_name] = net_quantities.get(item_name, 0) + quantity
+            with open(file_path, "r") as json_file:
+                data = json.load(json_file)
 
-                # Carry forward items with non-zero net quantities
-                for item_name, net_quantity in net_quantities.items():
-                    if net_quantity != 0:
-                        today_data.append({"timestamp": str(datetime.now()), "item": {
-                            "name": item_name,
-                            "quantity": net_quantity,
-                            "price": 0.0  # Adjust as needed
-                        }})
+            # Sum quantities for each id
+            for entry in data:
+                item_id = entry["item"]["id"]
+                quantity = entry["item"]["quantity"]
+                id_sums[item_id] = id_sums.get(item_id, 0) + quantity
 
-                self.save_data(today_filename, today_data)
+            # Check if there are non-zero sum entries
+            if any(sum != 0 for sum in id_sums.values()):
+                non_zero_sum_entries.extend([entry for entry in data if id_sums[entry["item"]["id"]] != 0])
+                print(f"Non-zero sum entries found in {filename}")
+            else:
+                print(f"No non-zero sum entries found in {filename}")
+
+        print(id_sums)
+
+        # Remove leftover items with zero sum from non_zero_sum_entries using id_sums
+        non_zero_sum_entries = [entry for entry in non_zero_sum_entries if id_sums[entry["item"]["id"]] != 0]
+
+        # Create a new file for non-zero sum entries
+        if non_zero_sum_entries:
+            new_filename = f"carry_forward_{today_date}.json"
+            new_file_path = os.path.join(self.database_directory, new_filename)
+
+            with open(new_file_path, "w") as new_json_file:
+                json.dump(non_zero_sum_entries, new_json_file, indent=2)
+
+            print(f"Carry-forward data saved to {new_file_path}")
+        else:
+            print("No non-zero sum entries found in any file")
+
 
     def print_entries(self, name=None, item_number=None):
         data = self.load_data(self.get_today_filename())
@@ -158,32 +146,27 @@ class InventoryDatabase:
             print("\nSummary:")
             print(f"Net Quantity: {net_quantity_sum}")
 
-    def get_inventory(self):
-        return self.load_data(self.get_today_filename())
-
-# Example Usage:
+# Example usage
 if __name__ == "__main__":
-    db = InventoryDatabase()
+    # Create an instance of InventoryDatabase
+    inventory_db = InventoryDatabase()
 
-    # Carry forward items from the last available day (if any)
-    db.carry_forward()
+    # Example data
+    inventory_data = {
+        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "item": {
+            # ... your item data here ...
+        }
+    }
 
-    # Add items to inventory
-    db.add_item("Product A", quantity=10, price=25.99)
-    db.add_item("Product B", quantity=5, price=14.99)
-    db.add_item("Product C", quantity=20, price=19.99)
+    # Save inventory data using the class method with today's filename
+    inventory_db.save_inventory_data(inventory_data)
 
-    # Remove an item from inventory
-    db.remove_item("Product B", quantity=3, price=14.99)  # Remove 3 items with a specific price
+    # List all filenames except today's
+    filenames_except_today = inventory_db.list_all_filenames_except_today()
+    print("All filenames except today's:")
+    for filename in filenames_except_today:
+        print(filename)
 
-    # Print entries for all items
-    db.print_entries()
-
-    # Print entries for a specific item
-    db.print_entries(name="Product A")
-
-    # Print summary for all items
-    db.print_summary()
-
-    # Print summary for a specific item
-    db.print_summary(name="Product C")
+    # Carry forward non-zero sum entries to a new file for each day
+    inventory_db.carry_forward()
